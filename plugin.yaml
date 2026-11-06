@@ -1,0 +1,53 @@
+name: recall
+version: 0.1.0
+manifest_version: 2
+api_version: 1
+description: >-
+  Local file recall for Hermes: a private, on-device index of the documents on your
+  machine (FTS5, no network, no embeddings service), a @recall: context reference that
+  pulls the right file into the prompt, and a pre_llm_call hint that surfaces candidate
+  files before the model answers — so "where is that Acme invoice" is answered from the
+  real file instead of a guess.
+author: memeshee
+license: MIT
+homepage: https://github.com/memeshee/hermes-recall
+tags: [files, search, index, local-first, context, documents]
+requires_hermes: ">=0.19"
+provides_tools:
+  - recall_index
+  - recall_search
+  - recall_open
+  - recall_stats
+provides_hooks:
+  - pre_llm_call
+config_schema:
+  roots:
+    type: list
+    description: "Folders to index. Defaults to ~/Documents, ~/Desktop, ~/Downloads, ~/Projects."
+  excludes:
+    type: list
+    description: "Extra glob patterns to skip, on top of the built-in secret and build-directory denylist."
+  ambient:
+    type: bool
+    default: true
+    description: "Let the pre_llm_call hook surface candidate files when a message looks like it is about a document."
+  max_hints:
+    type: int
+    default: 3
+    description: "Maximum candidate files injected per turn."
+  max_file_mb:
+    type: int
+    default: 8
+    description: "Skip files larger than this many megabytes."
+  chunk_chars:
+    type: int
+    default: 1200
+    description: "Characters per indexed chunk."
+  max_files:
+    type: int
+    default: 20000
+    description: "Hard cap on files touched by one index run."
+  budget_s:
+    type: int
+    default: 90
+    description: "Wall-clock budget for one index run before it returns partial progress."
