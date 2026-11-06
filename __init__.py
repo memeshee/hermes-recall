@@ -162,4 +162,6 @@ def register(ctx) -> None:
     except Exception as exc:  # skill is a convenience, not the product
         logger.debug("recall: skill registration skipped: %s", exc)
 
-    logger.info("recall: registered 4 tools, pre_llm_call hook, @recall: reference and /recall")
+    logger.info(
+        "recall: registered 5 tools, pre_llm_call + on_session_start hooks, @recall: reference, /recall"
+    )
