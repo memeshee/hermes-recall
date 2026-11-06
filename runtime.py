@@ -52,10 +52,6 @@ class Runtime:
         with self._lock:
             if self._conn is None:
                 conn = store.connect(self.db_path)
-                try:
-                    conn._recall_db_path = str(self.db_path)  # type: ignore[attr-defined]
-                except Exception:
-                    pass
                 store.set_meta(conn, "db_path", str(self.db_path))
                 # Commit the seed: an open implicit transaction here pins SQLite's write lock for
                 # the life of this connection, so every later writer (including a reload's fresh

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -24,8 +25,10 @@ def recall_index(runtime, args: dict[str, Any]) -> str:
             requested = [requested]
         roots = indexer.resolve_roots(requested or runtime.setting("roots"))
         if not roots:
+            missing = [str(p) for p in (requested or runtime.setting("roots") or [])]
             return _err(
-                "no indexable folders found",
+                "no indexable folders found"
+                + (f" — not a directory: {', '.join(missing)}" if missing else ""),
                 configured=runtime.setting("roots"),
                 hint="pass path=[\"/abs/dir\"] or set plugins.entries.recall.settings.roots",
             )
@@ -125,11 +128,48 @@ def recall_stats(runtime, args: dict[str, Any]) -> str:
     try:
         conn = runtime.conn
         out = store.stats(conn)
-        out["roots_configured"] = runtime.setting("roots") or list(indexer.DEFAULT_ROOTS)
+        configured = runtime.setting("roots") or list(indexer.DEFAULT_ROOTS)
+        out["roots_configured"] = configured
+        out["roots_missing"] = [
+            str(p) for p in configured if not Path(os.path.expandvars(os.path.expanduser(str(p)))).is_dir()
+        ]
         out["ambient"] = bool(runtime.setting("ambient"))
+        out["refresh_on_start"] = bool(runtime.setting("refresh_on_start", True))
+        if out["files"] == 0:
+            out["hint"] = (
+                "nothing indexed yet — call recall_index with the folders that hold the user's "
+                "documents (one run is incremental from then on)"
+            )
         return json.dumps(out, ensure_ascii=False)
     except Exception as exc:
         return _err(f"stats failed: {exc.__class__.__name__}: {exc}")
+
+
+def recall_forget(runtime, args: dict[str, Any]) -> str:
+    """Drop files (or the whole index) so a path the user considers private stops being searchable."""
+    try:
+        conn = runtime.conn
+        target = str(args.get("path") or "").strip()
+        if args.get("all"):
+            before = store.stats(conn)
+            store.wipe(conn)
+            return json.dumps(
+                {
+                    "cleared": True,
+                    "files_removed": before["files"],
+                    "hint": "the index is empty now — recall_index rebuilds it when you want it",
+                },
+                ensure_ascii=False,
+            )
+        if not target:
+            return _err("pass path=<file or folder> or all=true")
+        removed = store.forget_path(conn, target)
+        return json.dumps(
+            {"path": target, "files_removed": removed, "files_remaining": store.stats(conn)["files"]},
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        return _err(f"forget failed: {exc.__class__.__name__}: {exc}")
 
 
 INDEX_SCHEMA = {
@@ -191,6 +231,23 @@ OPEN_SCHEMA = {
             "max_chars": {"type": "integer", "description": "Characters to return (default 24000)."},
         },
         "required": ["path"],
+    },
+}
+
+FORGET_SCHEMA = {
+    "name": "recall_forget",
+    "description": (
+        "Remove a file or folder from the local search index, or clear the whole index. Use it when "
+        "the user says something should not be searchable (a private folder, a document they "
+        "deleted), or to reset after changing the indexed roots. Deletes index rows only — the "
+        "files on disk are never touched."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": "A file path, or a folder prefix to drop from the index."},
+            "all": {"type": "boolean", "description": "Clear every indexed file."},
+        },
     },
 }
 

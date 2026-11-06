@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import hooks as _hooks
+from . import refresh
 from . import tools as _tools
 from .refs import RecallReference
 from .runtime import Runtime
@@ -50,6 +51,23 @@ def _cmd(runtime: Runtime, raw_args: str) -> str:
                 f"indexed {data.get('indexed', 0)} new/changed, {data.get('unchanged', 0)} unchanged, "
                 f"{data.get('skipped', 0)} skipped, {data.get('removed', 0)} removed in {data.get('seconds')}s "
                 f"— {data.get('files', 0)} files total"
+            )
+        if args.startswith("forget"):
+            target = args[len("forget"):].strip()
+            if target in {"all", "*"}:
+                payload = {"all": True}
+            elif target:
+                payload = {"path": target}
+            else:
+                return "usage: /recall forget <path>   or   /recall forget all"
+            data = json.loads(_tools.recall_forget(runtime, payload))
+            if "error" in data:
+                return f"recall forget: {data['error']}"
+            if data.get("cleared"):
+                return f"index cleared — {data['files_removed']} files removed"
+            return (
+                f"removed {data.get('files_removed', 0)} file(s) from the index; "
+                f"{data.get('files_remaining', 0)} remain"
             )
         data = json.loads(_tools.recall_search(runtime, {"query": args, "limit": 6}))
         if "error" in data:
@@ -106,8 +124,27 @@ def register(ctx) -> None:
         description="Health and coverage of the local file index.",
         emoji="📊",
     )
+    ctx.register_tool(
+        name="recall_forget",
+        toolset=TOOLSET,
+        schema=_tools.FORGET_SCHEMA,
+        handler=lambda args, **kw: _tools.recall_forget(runtime, args),
+        description="Drop a file, folder or the whole index from local recall.",
+        emoji="🧽",
+    )
 
     ctx.register_hook("pre_llm_call", _hooks.make_hook(runtime))
+
+    def _on_session_start(**kwargs: Any):
+        # Bounded, off-thread, and a no-op until an index exists: a stale index answers "no match"
+        # for a file the user just saved, so every new session nudges it forward.
+        try:
+            refresh.schedule(runtime)
+        except Exception:
+            pass
+        return None
+
+    ctx.register_hook("on_session_start", _on_session_start)
     ctx.register_context_reference(RecallReference(runtime))
     ctx.register_command(
         "recall",

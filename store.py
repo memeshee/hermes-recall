@@ -99,15 +99,36 @@ def put_file(
         (path, mtime, size, ext, len(chunks), skipped),
     )
     fid = cur.lastrowid
-    for i, text in enumerate(chunks):
-        conn.execute("INSERT INTO chunks(file_id, ord, text) VALUES(?,?,?)", (fid, i, text))
-        conn.execute(
-            "INSERT INTO chunks_fts(text, path, file_id, ord) VALUES(?,?,?,?)",
-            (text, path, fid, i),
-        )
+    # Batch the two inserts: a first run over a few thousand files writes ~100k chunk rows, and
+    # per-row execution there is most of the indexing wall clock.
+    conn.executemany(
+        "INSERT INTO chunks(file_id, ord, text) VALUES(?,?,?)",
+        [(fid, i, text) for i, text in enumerate(chunks)],
+    )
+    conn.executemany(
+        "INSERT INTO chunks_fts(text, path, file_id, ord) VALUES(?,?,?,?)",
+        [(text, path, fid, i) for i, text in enumerate(chunks)],
+    )
 
 
 _TOKEN = re.compile(r"[0-9A-Za-z_]{2,}")
+
+
+def _is_phrase_hit(text: str, tokens: list[str]) -> bool:
+    """True when every query token appears in the snippet and in query order (a phrase-ish match).
+
+    Cheap on purpose: it runs on the snippet FTS5 already produced, so there is no second index and
+    no extra query. It only nudges ranking — a document that says "powder coating price" in one
+    sentence should beat a file that mentions the three words in three unrelated places.
+    """
+    flat = re.sub(r"[\[\]]", "", text or "").lower()
+    pos = 0
+    for tok in tokens:
+        found = flat.find(tok, pos)
+        if found < 0:
+            return False
+        pos = found + len(tok)
+    return True
 
 
 def query_tokens(query: str, limit: int = 12) -> list[str]:
@@ -183,15 +204,29 @@ def search(
             age_days = 3650.0
         # Gentle recency favour: a year-old file keeps ~70% of the boost of a fresh one.
         score *= 1.0 + 0.35 / (1.0 + age_days / 90.0)
+        snip = (row["snip"] or "").strip()
+        if len(tokens) >= 2 and _is_phrase_hit(snip, tokens):
+            score += 3.0
+        is_name_chunk = row["ord"] == 0
         prev = best.get(path)
-        if prev is None or score > prev["score"]:
+        if prev is None:
             best[path] = {
                 "path": path,
                 "name": Path(path).name,
                 "score": round(score, 2),
-                "snippet": (row["snip"] or "").strip(),
+                "snippet": snip,
                 "chunk": row["ord"],
+                "_name_chunk": is_name_chunk,
             }
+            continue
+        # Rank by the best chunk, but prefer a real (non-filename) chunk for the preview so a hit
+        # never shows only the synthetic name row when its body also matched.
+        if score > prev["score"]:
+            prev["score"] = round(score, 2)
+        if prev["_name_chunk"] and not is_name_chunk and snip:
+            prev["snippet"], prev["chunk"], prev["_name_chunk"] = snip, row["ord"], False
+    for item in best.values():
+        item.pop("_name_chunk", None)
 
     out = sorted(best.values(), key=lambda d: d["score"], reverse=True)[:limit]
     for item in out:
@@ -217,6 +252,28 @@ def stats(conn: sqlite3.Connection) -> dict[str, Any]:
         "db": get_meta(conn, "db_path", ""),
         "index_seconds": get_meta(conn, "index_seconds", ""),
     }
+
+
+def forget_path(conn: sqlite3.Connection, target: str) -> int:
+    """Drop one file, or everything under a folder prefix. Returns how many files were removed."""
+    target = target.rstrip("/")
+    rows = conn.execute(
+        "SELECT path FROM files WHERE path = ? OR path LIKE ?",
+        (target, target + "/%"),
+    ).fetchall()
+    for row in rows:
+        drop_file(conn, row["path"])
+    conn.commit()
+    return len(rows)
+
+
+def wipe(conn: sqlite3.Connection) -> None:
+    """Empty the index but keep the schema and settings."""
+    conn.execute("DELETE FROM chunks_fts")
+    conn.execute("DELETE FROM chunks")
+    conn.execute("DELETE FROM files")
+    conn.execute("DELETE FROM meta WHERE key IN ('last_index', 'roots', 'index_seconds')")
+    conn.commit()
 
 
 def iter_paths(conn: sqlite3.Connection, prefix: str = "") -> Iterable[str]:

@@ -1,13 +1,15 @@
 name: recall
-version: 0.1.0
+version: 0.2.0
 manifest_version: 2
 api_version: 1
 description: >-
   Local file recall for Hermes: a private, on-device index of the documents on your
-  machine (FTS5, no network, no embeddings service), a @recall: context reference that
-  pulls the right file into the prompt, and a pre_llm_call hint that surfaces candidate
-  files before the model answers — so "where is that Acme invoice" is answered from the
-  real file instead of a guess.
+  machine (SQLite FTS5, standard library extraction, no network and no embedding service),
+  a @recall: context reference that pulls the right file into the prompt, and a
+  pre_llm_call hint that surfaces candidate files before the model answers — so "where is
+  that Acme invoice" is answered from the real file instead of a guess. Five tools
+  (index/search/open/stats/forget), a bounded background refresh on session start, and a
+  credential-store denylist applied before any file is opened.
 author: memeshee
 license: MIT
 homepage: https://github.com/memeshee/hermes-recall
@@ -18,8 +20,10 @@ provides_tools:
   - recall_search
   - recall_open
   - recall_stats
+  - recall_forget
 provides_hooks:
   - pre_llm_call
+  - on_session_start
 config_schema:
   roots:
     type: list
@@ -51,3 +55,15 @@ config_schema:
     type: int
     default: 90
     description: "Wall-clock budget for one index run before it returns partial progress."
+  refresh_on_start:
+    type: bool
+    default: true
+    description: "Once an index exists, refresh it in the background when a session starts, so a file saved yesterday is findable today."
+  refresh_budget_s:
+    type: int
+    default: 25
+    description: "Wall-clock budget for one background refresh."
+  refresh_max_files:
+    type: int
+    default: 5000
+    description: "Max files a background refresh inspects."

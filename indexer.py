@@ -180,7 +180,9 @@ def index(
     store.set_meta(conn, "last_index", time.strftime("%Y-%m-%d %H:%M:%S"))
     store.set_meta(conn, "roots", ", ".join(str(r) for r in roots))
     store.set_meta(conn, "index_seconds", f"{elapsed:.1f}")
-    store.set_meta(conn, "db_path", str(getattr(conn, "_recall_db_path", "")))
+    db_path = str(getattr(conn, "_recall_db_path", "") or store.get_meta(conn, "db_path", ""))
+    if db_path:
+        store.set_meta(conn, "db_path", db_path)
     conn.commit()
     return {
         "indexed": touched,
