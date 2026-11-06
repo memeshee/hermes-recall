@@ -101,6 +101,9 @@ Never read — matched by name **before** a file is opened, and not removable by
 .env  *.env  .env.*  *.pem  *.key  *.p12  *.pfx  *.keystore
 id_rsa*  id_ed25519*  *.kdbx  .netrc  .pgpass  .git-credentials
 auth.json  credentials.json  state.db*  .npmrc  .pypirc
+key.txt  keys.txt  tokens.json  api.json  *apikey*  *api*key*
+*recovery*code*  *backup*code*  *seed*phrase*  *mnemonic*  *secret*  *credential*
+*.ovpn  *.ppk  wallet*.dat  *.wallet
 .ssh/  .gnupg/  .aws/  .azure/  .kube/  .docker/  .password-store/
 node_modules/  .git/  .venv/  __pycache__/  dist/  build/  target/  .cache/
 Library/  AppData/  .local/  .Trash/  site-packages/
@@ -118,7 +121,7 @@ Under `plugins.entries.recall.settings` (Desktop → Plugins → recall, or `her
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `roots` | `~/Documents, ~/Desktop, ~/Downloads, ~/Projects` | folders indexed when no path is given |
+| `roots` | `~/Documents` | folders indexed when no path is given — deliberately **not** all of `~`; name `~/Downloads` or `~/Desktop` yourself if you want them |
 | `excludes` | `[]` | extra glob/substring patterns on top of the built-in denylist |
 | `ambient` | `true` | allow the `pre_llm_call` hint |
 | `max_hints` | `3` | candidate files per turn |
@@ -126,7 +129,7 @@ Under `plugins.entries.recall.settings` (Desktop → Plugins → recall, or `her
 | `chunk_chars` | `1200` | characters per indexed passage |
 | `max_files` | `20000` | files touched by one run |
 | `budget_s` | `90` | wall-clock budget for one run; partial runs resume next call |
-| `refresh_on_start` | `true` | background refresh when a session starts (no-op until an index exists) |
+| `refresh_on_start` | `true` | background refresh when a session starts — scoped to the folders your own index run named, never the defaults, and a no-op when the index is empty |
 | `refresh_budget_s` | `25` | wall-clock budget for one refresh |
 | `refresh_max_files` | `5000` | files a refresh inspects |
 
@@ -135,7 +138,8 @@ Under `plugins.entries.recall.settings` (Desktop → Plugins → recall, or `her
 - **Local only.** No network, no API key, no account, no telemetry. The index is one SQLite file
   (FTS5) under `~/.hermes/plugin-data/recall/`.
 - **Incremental.** `(mtime, size)` decides what to re-read; a deleted file is dropped on the next run
-  inside a scanned root; the background refresh keeps it honest.
+  inside a scanned root; the background refresh keeps it honest — and it only ever re-reads the folders
+  your own index run named, so it cannot widen the index behind your back.
 - **Bounded.** Every run stops at `budget_s` / `max_files` and reports `partial: true` instead of
   hanging a turn.
 - **Read before quote.** Snippets are previews. The tool descriptions and the bundled skill tell the
@@ -149,6 +153,10 @@ Under `plugins.entries.recall.settings` (Desktop → Plugins → recall, or `her
 
 - **No OCR.** A scanned PDF or a photo of a receipt is findable by filename only; its content is not
   indexed, and `recall_stats` says so.
+- **Name filtering cannot be complete.** The denylist refuses the habitual secret filenames (`.env`,
+  keys, recovery codes, seed phrases, API token dumps) *before* anything is opened, but a password
+  written inside `meeting-notes.txt` will still be indexed. Point `roots` at document folders, not at
+  your whole home directory, and run `recall_forget` when something should not be in there.
 - **Lexical, not semantic.** Ranking is BM25 plus path/recency/phrase boosts. *"The document where we
   agreed the delivery date"* works; *"the thing that lawyer sent"* only works if those words are in it.
   No embedding model runs — which is why there is no key, no model download and no per-query cost.
@@ -174,11 +182,12 @@ invisible. Use it to try the plugin or to reproduce a bug without touching real 
 python3 tests/selftest.py     # standard library only, no Hermes install needed
 ```
 
-Thirteen behavioural checks: content ranking, PDF/Word/Excel extraction, the credential denylist
-(including `recall_open` refusing a secret path), name-only recall for an unreadable file, incremental
-re-index, thread safety of the shared connection, phrase-over-scatter ranking, forget/clear, and the
-ambient hook's four rules (fires for a document question, silent on chit-chat, silent on
-machine-generated turns, does not repeat itself).
+Fifteen behavioural checks: content ranking, PDF/Word/Excel extraction, the credential denylist
+(including `recall_open` refusing a secret path, and the everyday secret filenames people actually
+keep in Documents), name-only recall for an unreadable file, incremental re-index, thread safety of
+the shared connection, phrase-over-scatter ranking, refresh scoping, forget/clear, and the ambient
+hook's four rules (fires for a document question, silent on chit-chat, silent on machine-generated
+turns, does not repeat itself).
 
 `hermes plugins validate ./` passes locally — the same gate the catalog CI runs.
 

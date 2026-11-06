@@ -52,6 +52,20 @@ def _worker(runtime, roots, excludes, budget_s: int, max_files: int) -> None:
             _running = False
 
 
+def refresh_roots(runtime) -> list:
+    """The folders a refresh may touch: exactly what the last explicit run indexed.
+
+    Never the configured defaults — re-resolving those here would silently widen the index the first
+    time a session starts on a machine with a populated ~/Downloads, and indexing folders the user
+    never asked for is the worst kind of surprise.
+    """
+    recorded = store.get_meta(runtime.conn, "roots", "")
+    candidates = [part.strip() for part in recorded.split(",") if part.strip()]
+    if not candidates:
+        return []
+    return indexer.resolve_roots(candidates)
+
+
 def schedule(runtime) -> bool:
     """Start a bounded refresh if one is not already running. Returns True when a thread started."""
     global _running
@@ -62,7 +76,7 @@ def schedule(runtime) -> bool:
             return False  # nothing indexed yet: the first run stays an explicit user action
     except Exception:
         return False
-    roots = indexer.resolve_roots(runtime.setting("roots"))
+    roots = refresh_roots(runtime)
     if not roots:
         return False
     excludes = tuple(str(x) for x in (runtime.setting("excludes") or []))

@@ -215,6 +215,45 @@ class RecallTests(unittest.TestCase):
         hits = recall.store.search(self.db, "powder coating price", limit=2)
         self.assertTrue(hits)
         self.assertTrue(hits[0]["path"].endswith("together.txt"), hits)
+    def test_secret_names_are_refused_even_when_innocent(self):
+        """The habitual secret filenames people keep in Documents and Downloads never get indexed."""
+        probe = self.tmp / "personal"
+        (probe / "nested").mkdir(parents=True)
+        for name in (
+            "ngrok_recovery_codes.txt",
+            "coinlist_authen_backupcode.txt",
+            "key.txt",
+            "tokens.json",
+            "api.json",
+            "my-api-key.md",
+            "seed phrase.txt",
+            "wallet.dat",
+        ):
+            target = probe / ("nested/" + name if " " in name else name)
+            target.write_text("super secret material that must never be indexed\n", encoding="utf-8")
+        (probe / "innocent.txt").write_text(
+            "this one is a normal document and IS indexed\n", encoding="utf-8"
+        )
+        recall.indexer.index(self.db, [probe], max_files=100, budget_s=20)
+        paths = [row["path"] for row in self.db.execute("SELECT path FROM files")]
+        self.assertEqual(len([p for p in paths if p.endswith("innocent.txt")]), 1, paths)
+        for banned in ("recovery_codes", "backupcode", "key.txt", "tokens.json", "api.json",
+                       "my-api-key", "seed phrase", "wallet.dat"):
+            self.assertFalse([p for p in paths if banned in p], f"{banned} was indexed: {paths}")
+
+    def test_refresh_is_scoped_to_the_last_explicit_index(self):
+        """A refresh must never widen the index to folders the user did not name."""
+        runtime = Runtime(self.db)
+        self.assertEqual(
+            [str(r) for r in recall.refresh.refresh_roots(runtime)], [str(self.corpus.resolve())]
+        )
+        # A database with no recorded run refreshes nothing at all (not even the default roots).
+        empty = recall.store.connect(self.tmp / "empty.db")
+        empty_runtime = Runtime(empty)
+        self.assertEqual(recall.refresh.refresh_roots(empty_runtime), [])
+        self.assertFalse(recall.refresh.schedule(empty_runtime))
+        empty.close()
+
     def test_ambient_hook_does_not_repeat_the_same_files(self):
         runtime = Runtime(self.db)
         message = "where is the acme robotics invoice document"

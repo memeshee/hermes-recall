@@ -23,6 +23,12 @@ SECRET_GLOBS = (
     "id_rsa*", "id_ed25519*", "id_ecdsa*", "*.kdbx", "*.asc", "*.gpg",
     ".netrc", ".pgpass", ".git-credentials", "credentials", "credentials.json",
     "auth.json", "secrets.json", "*.secret", ".npmrc", ".pypirc", "state.db*",
+    # Secret-bearing names people actually use in Documents/Downloads. Name matching can never be
+    # complete — a password in `notes.txt` still gets indexed — but these are the habitual ones
+    # (recovery codes, seed phrases, API tokens, exported keys) and indexing them is indefensible.
+    "key.txt", "keys.txt", "tokens.json", "api.json", "*apikey*", "*api*key*",
+    "*recovery*code*", "*backup*code*", "*seed*phrase*", "*mnemonic*", "*keystore*",
+    "*secret*", "*credential*", "*.ovpn", "*.ppk", "wallet*.dat", "*.wallet",
 )
 
 # Always skipped directories (matched against the directory name).
@@ -35,7 +41,10 @@ SKIP_DIRS = (
     "Library", "AppData", ".local",
 )
 
-DEFAULT_ROOTS = ("~/Documents", "~/Desktop", "~/Downloads", "~/Projects")
+# Conservative on purpose: one folder that holds documents, not the whole home directory. ~/Downloads
+# and ~/Desktop are full of screenshots, installers, bank statements and exported keys, so they are
+# opt-in (name them in the roots setting) rather than indexed by default.
+DEFAULT_ROOTS = ("~/Documents",)
 
 MAX_CHUNKS_PER_FILE = 400
 
