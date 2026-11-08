@@ -187,8 +187,10 @@ def index(
         chunks = [name_chunk] + chunk_text(text, chunk_chars)[:MAX_CHUNKS_PER_FILE]
         try:
             store.put_file(conn, spath, st.st_mtime, st.st_size, path.suffix.lower(), chunks, "")
-        except Exception:  # a corrupt file must not abort the whole run
+        except Exception as exc:  # a corrupt file must not abort the whole run
             errors += 1
+            key = f"write: {exc.__class__.__name__}"
+            reason_counts[key] = reason_counts.get(key, 0) + 1
             continue
         touched += 1
         if touched % 100 == 0:

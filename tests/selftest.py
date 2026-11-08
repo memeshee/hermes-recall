@@ -487,5 +487,52 @@ class ExtractionCapTests(unittest.TestCase):
         self.assertLessEqual(len(text), 6_000, len(text))
 
 
+class SearchFilterTests(unittest.TestCase):
+    """A filter must narrow the result set, not the candidate window that feeds it."""
+
+    QUERY = "quarterly beacon plan"
+
+    def setUp(self):
+        self.tmp = _scratch("recall-filter-")
+        self.docs = self.tmp / "docs"
+        self.docs.mkdir()
+        # 45 .txt files that match the query far more strongly than the one pdf, so the pdf falls
+        # below the 40-row candidate window a search fetches before ranking.
+        strong = (self.QUERY + " ") * 6
+        for i in range(45):
+            (self.docs / f"note-{i:02d}.txt").write_text(strong + "\n", encoding="utf-8")
+        (self.docs / "official-beacon-plan.pdf").write_text(
+            "%PDF-1.4\n1 0 obj\n(quarterly beacon plan)\nendobj\n%%EOF\n", encoding="utf-8"
+        )
+        self.db = recall.store.connect(self.tmp / "index.db")
+        recall.indexer.index(self.db, [self.docs], max_files=200, budget_s=20)
+
+    def tearDown(self):
+        self.db.close()
+
+    def test_ext_filter_is_applied_inside_the_query(self):
+        # Guard the fixture: if the pdf did land in the unfiltered window this test proves nothing.
+        match = recall.store.build_match(self.QUERY)
+        window = self.db.execute(
+            "SELECT path FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25(chunks_fts) LIMIT 40",
+            (match,),
+        ).fetchall()
+        self.assertFalse(
+            [r["path"] for r in window if r["path"].endswith(".pdf")],
+            "fixture no longer starves the window",
+        )
+        hits = recall.store.search(self.db, self.QUERY, limit=3, ext="pdf")
+        self.assertTrue(hits, "ext=pdf returned nothing although a pdf matches")
+        self.assertTrue(all(h["path"].endswith(".pdf") for h in hits), hits)
+        hits = recall.store.search(self.db, self.QUERY, limit=3, ext="txt")
+        self.assertTrue(hits)
+        self.assertTrue(all(h["path"].endswith(".txt") for h in hits), hits)
+
+    def test_path_filter_is_applied_inside_the_query(self):
+        hits = recall.store.search(self.db, self.QUERY, limit=3, path_filter="official")
+        self.assertTrue(hits, hits)
+        self.assertTrue(all("official" in h["path"] for h in hits), hits)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

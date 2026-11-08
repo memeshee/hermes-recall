@@ -164,18 +164,31 @@ def search(
     match = build_match(query)
     if not match:
         return []
+    # The extension and path filters belong in the query, not in a loop over an already-truncated
+    # candidate window: filtering after `LIMIT 40` answers "no match" when the best hits for the
+    # requested extension sit below the cut.
+    wanted_ext = ext.lower().lstrip(".")
+    where = ["chunks_fts MATCH ?"]
+    params: list[Any] = [match]
+    if wanted_ext:
+        where.append("path LIKE ?")
+        params.append("%." + wanted_ext)
+    if path_filter:
+        where.append("path LIKE ?")
+        params.append("%" + path_filter + "%")
+    params.append(max(limit * 12, 40))
     rows = conn.execute(
-        """
+        f"""
         SELECT path,
                ord,
                snippet(chunks_fts, 0, '[', ']', ' … ', 18) AS snip,
                bm25(chunks_fts) AS bm25
         FROM chunks_fts
-        WHERE chunks_fts MATCH ?
+        WHERE {' AND '.join(where)}
         ORDER BY bm25
         LIMIT ?
         """,
-        (match, max(limit * 12, 40)),
+        params,
     ).fetchall()
     if not rows:
         return []
@@ -187,6 +200,7 @@ def search(
     for row in rows:
         path = row["path"]
         low = path.lower()
+        # Re-checked exactly: the LIKE above is a coarse prefilter (`_` and `%` are wildcards there).
         if path_filter and path_filter.lower() not in low:
             continue
         if wanted_ext and not low.endswith("." + wanted_ext):

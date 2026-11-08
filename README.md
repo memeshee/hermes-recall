@@ -193,17 +193,18 @@ invisible. Use it to try the plugin or to reproduce a bug without touching real 
 python3 tests/selftest.py     # standard library only, no Hermes install needed
 ```
 
-Twenty-eight behavioural checks: content ranking, PDF/Word/Excel extraction, the credential denylist
+Thirty behavioural checks: content ranking, PDF/Word/Excel extraction, the credential denylist
 (including `recall_open` refusing a secret path, and the everyday secret filenames people actually
 keep in Documents), name-only recall for an unreadable file, incremental re-index, thread safety of
-the shared connection, phrase-over-scatter ranking, refresh scoping (including a folder whose name
-contains a comma), forget/clear, the ambient hook's four rules (fires for a document question, silent
-on chit-chat, silent on machine-generated turns, does not repeat itself, and stays inside its prompt
-budget), and the read policy: a fake `~/.hermes` installed for the run, a whole `~` indexed with the
-home pruned out of it, `recall_open` and `@recall:` refusing the vault, session transcripts,
-`mcp-tokens/`, `webhook_subscriptions.json`, `state.db` and the plugin's own index, a symlink named
-`notes.txt` pointing at `mcp-tokens/linear.json`, `/proc/self/environ`, the `~/Documents-private` vs
-`~/Documents` prefix case, and the caps that stop a `.docx` or a PDF from inflating without bound.
+the shared connection, phrase-over-scatter ranking, `ext`/path filters that narrow the query rather
+than the candidate window, refresh scoping (including a folder whose name contains a comma),
+forget/clear, the ambient hook's four rules (fires for a document question, silent on chit-chat,
+silent on machine-generated turns, does not repeat itself, and stays inside its prompt budget), and
+the read policy: a fake `~/.hermes` installed for the run, a whole `~` indexed with the home pruned
+out of it, `recall_open` and `@recall:` refusing the vault, session transcripts, `mcp-tokens/`,
+`webhook_subscriptions.json`, `state.db` and the plugin's own index, a symlink named `notes.txt`
+pointing at `mcp-tokens/linear.json`, `/proc/self/environ`, the `~/Documents-private` vs `~/Documents`
+prefix case, and the caps that stop a `.docx` or a PDF from inflating without bound.
 
 `hermes plugins validate ./` passes locally — the same gate the catalog CI runs.
 
