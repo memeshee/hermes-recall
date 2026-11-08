@@ -1,5 +1,5 @@
 name: recall
-version: 0.2.0
+version: 0.2.1
 manifest_version: 2
 api_version: 1
 description: >-
@@ -9,7 +9,9 @@ description: >-
   pre_llm_call hint that surfaces candidate files before the model answers — so "where is
   that Acme invoice" is answered from the real file instead of a guess. Five tools
   (index/search/open/stats/forget), a bounded background refresh on session start, and a
-  credential-store denylist applied before any file is opened.
+  read policy applied to the resolved path that refuses credential stores, Hermes' own home
+  directory (~/.hermes: vault, sessions, MCP tokens, the index itself) and virtual
+  filesystems before any file is opened.
 author: memeshee
 license: MIT
 homepage: https://github.com/memeshee/hermes-recall
@@ -27,10 +29,10 @@ provides_hooks:
 config_schema:
   roots:
     type: list
-    description: "Folders to index. Defaults to ~/Documents, ~/Desktop, ~/Downloads, ~/Projects."
+    description: "Folders to index. Defaults to ~/Documents only; ~/Downloads, ~/Desktop and ~/Projects are indexed only when named here. Any folder inside Hermes' own home is refused."
   excludes:
     type: list
-    description: "Extra glob patterns to skip, on top of the built-in secret and build-directory denylist."
+    description: "Extra glob patterns to skip, on top of the built-in secret, agent-state and build-directory denylist."
   ambient:
     type: bool
     default: true

@@ -1,35 +1,24 @@
 """Filesystem scan for the recall index: what may be read, what is never read, and how long a run
 is allowed to take.
 
-The denylist is the safety story. It is applied before any file is opened, it covers credential
-stores and agent state as well as build directories, and a user cannot remove the secret entries
-by editing settings — only add more patterns.
+Path policy lives in `guard.py` and is asked *before* any file is opened, on the resolved path. It
+covers the credential-store denylist, Hermes' own home (vault, sessions, MCP tokens, webhooks, the
+index itself) and virtual filesystems, and a user cannot remove those rules by editing settings —
+only add more patterns.
 """
 
 from __future__ import annotations
 
 import fnmatch
+import json
 import os
 import time
 from pathlib import Path
 from typing import Any, Iterable
 
-from . import store
+from . import guard, store
 from .extract import chunk_text, extract
-
-# Always skipped, in addition to whatever the user configures.
-SECRET_GLOBS = (
-    "*.env", ".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.keystore",
-    "id_rsa*", "id_ed25519*", "id_ecdsa*", "*.kdbx", "*.asc", "*.gpg",
-    ".netrc", ".pgpass", ".git-credentials", "credentials", "credentials.json",
-    "auth.json", "secrets.json", "*.secret", ".npmrc", ".pypirc", "state.db*",
-    # Secret-bearing names people actually use in Documents/Downloads. Name matching can never be
-    # complete — a password in `notes.txt` still gets indexed — but these are the habitual ones
-    # (recovery codes, seed phrases, API tokens, exported keys) and indexing them is indefensible.
-    "key.txt", "keys.txt", "tokens.json", "api.json", "*apikey*", "*api*key*",
-    "*recovery*code*", "*backup*code*", "*seed*phrase*", "*mnemonic*", "*keystore*",
-    "*secret*", "*credential*", "*.ovpn", "*.ppk", "wallet*.dat", "*.wallet",
-)
+from .guard import SECRET_GLOBS, is_secret  # re-exported: the denylist is part of this module's API
 
 # Always skipped directories (matched against the directory name).
 SKIP_DIRS = (
@@ -50,32 +39,45 @@ MAX_CHUNKS_PER_FILE = 400
 
 
 def _expand(p: str) -> Path:
-    return Path(os.path.expandvars(os.path.expanduser(str(p))))
+    return guard.expand(p)
 
 
 def resolve_roots(configured: Iterable[str] | None) -> list[Path]:
-    raw = [str(r) for r in (configured or []) if str(r).strip()] or list(DEFAULT_ROOTS)
+    """Folders this plugin may index, resolved, deduplicated, and with refused roots dropped.
+
+    A root inside Hermes' home is refused rather than silently walked: `recall_index path=["~"]` is
+    a legitimate thing for a user to type, and it must not index `~/.hermes`. A bare string is
+    accepted too — `hermes config set` happily stores one.
+    """
+    raw = _as_list(configured) or list(DEFAULT_ROOTS)
     roots: list[Path] = []
     for item in raw:
         path = _expand(item)
-        if path.is_dir():
-            roots.append(path.resolve())
+        if not path.is_dir():
+            continue
+        real, reason = guard.inspect_dir(path)
+        if reason:
+            continue
+        # A root already covered by an earlier one would only be walked twice.
+        if any(guard.is_relative_to(real, existing) for existing in roots):
+            continue
+        roots.append(real)
     return roots
 
 
-def is_secret(path: Path) -> bool:
-    name = path.name.lower()
-    for pattern in SECRET_GLOBS:
-        if fnmatch.fnmatch(name, pattern):
-            return True
-    parts = {p.lower() for p in path.parts}
-    if parts & {".ssh", ".gnupg", ".aws", ".kube", ".password-store", ".azure"}:
-        return True
-    low = str(path).lower()
-    # Never index another profile's Hermes secrets or the agent's own session store.
-    if "/.hermes/" in low and ("/.env" in low or low.endswith("auth.json") or "state.db" in low):
-        return True
-    return False
+def refused_roots(configured: Iterable[str] | None) -> dict[str, str]:
+    """Configured roots that exist but may not be indexed, with the reason, for a readable error."""
+    raw = [r for r in _as_list(configured) if _expand(r).is_dir()]
+    return guard.refusal_for_roots(raw)
+
+
+def _as_list(configured: Iterable[str] | None) -> list[str]:
+    """A single path string is one root, not a sequence of characters."""
+    if configured is None:
+        return []
+    if isinstance(configured, (str, os.PathLike)):
+        configured = [configured]
+    return [str(r).strip() for r in configured if str(r).strip()]
 
 
 def _user_excluded(path: Path, patterns: tuple[str, ...]) -> bool:
@@ -90,25 +92,43 @@ def _user_excluded(path: Path, patterns: tuple[str, ...]) -> bool:
     return False
 
 
-def walk_files(roots: list[Path], excludes: tuple[str, ...] = ()) -> Iterable[Path]:
-    seen_roots = tuple(str(r) for r in roots)
+def walk_files(
+    roots: list[Path],
+    excludes: tuple[str, ...] = (),
+    refusals: dict[str, int] | None = None,
+) -> Iterable[Path]:
+    """Yield readable files under `roots`.
+
+    Every directory and file is judged on its **resolved** path (`guard.inspect*`), so a symlink
+    named `notes.txt` cannot point at a credential store, and containment is checked component by
+    component so `~/Documents-private` is not treated as being inside `~/Documents`.
+    """
     for root in roots:
+        root_real = guard.resolve(root)
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in SKIP_DIRS and not d.startswith(".git") and not _user_excluded(Path(dirpath) / d, excludes)
-            ]
+            keep: list[str] = []
+            for name in dirnames:
+                child = Path(dirpath) / name
+                if name in SKIP_DIRS or name.startswith(".git") or _user_excluded(child, excludes):
+                    continue
+                _, reason = guard.inspect_dir(child)
+                if reason:
+                    if refusals is not None:
+                        refusals[reason.split(" (")[0]] = refusals.get(reason.split(" (")[0], 0) + 1
+                    continue
+                keep.append(name)
+            dirnames[:] = keep
             for name in filenames:
                 path = Path(dirpath) / name
-                if is_secret(path) or _user_excluded(path, excludes):
+                if _user_excluded(path, excludes):
                     continue
-                # Guard against a symlinked root escaping into somewhere unexpected.
-                try:
-                    real = str(path.resolve())
-                except OSError:
+                real, reason = guard.inspect(path)
+                if reason:
+                    if refusals is not None:
+                        refusals[reason.split(" (")[0]] = refusals.get(reason.split(" (")[0], 0) + 1
                     continue
-                if not real.startswith(seen_roots):
-                    continue
+                if not guard.is_relative_to(real, root_real):
+                    continue  # a symlink that leaves the root
                 yield path
 
 
@@ -129,8 +149,9 @@ def index(
     touched = unchanged = skipped_n = errors = 0
     seen: set[str] = set()
     reason_counts: dict[str, int] = {}
+    refusals: dict[str, int] = {}
 
-    for path in walk_files(roots, excludes):
+    for path in walk_files(roots, excludes, refusals):
         if time.time() > deadline:
             break
         if touched + unchanged >= max_files:
@@ -179,7 +200,8 @@ def index(
         p = row["path"]
         if p in seen:
             continue
-        if not any(p.startswith(str(r)) for r in roots):
+        # Component-wise: a prefix test would treat ~/Documents-private as inside ~/Documents.
+        if not any(guard.is_relative_to(guard.expand(p), guard.resolve(r)) for r in roots):
             continue
         if not Path(p).exists():
             store.drop_file(conn, p)
@@ -188,6 +210,9 @@ def index(
     elapsed = time.time() - started
     store.set_meta(conn, "last_index", time.strftime("%Y-%m-%d %H:%M:%S"))
     store.set_meta(conn, "roots", ", ".join(str(r) for r in roots))
+    # JSON as well as the human-readable line: a folder may legally contain a comma, and the
+    # background refresh reads this back to decide what it may touch.
+    store.set_meta(conn, "roots_json", json.dumps([str(r) for r in roots]))
     store.set_meta(conn, "index_seconds", f"{elapsed:.1f}")
     db_path = str(getattr(conn, "_recall_db_path", "") or store.get_meta(conn, "db_path", ""))
     if db_path:
@@ -200,6 +225,7 @@ def index(
         "removed": removed,
         "errors": errors,
         "skip_reasons": dict(sorted(reason_counts.items(), key=lambda kv: -kv[1])[:6]),
+        "refused": dict(sorted(refusals.items(), key=lambda kv: -kv[1])[:6]),
         "seconds": round(elapsed, 2),
         "partial": elapsed >= max(5, int(budget_s)) - 0.5,
         "roots": [str(r) for r in roots],

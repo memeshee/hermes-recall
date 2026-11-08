@@ -26,5 +26,8 @@ should come from a file rather than from general knowledge or the web.
 - A file can be in the index and still not be the right file. Check the modified date and the
   opening lines before answering from it.
 - Credential stores are refused by design (`.env`, `*.pem`, `id_rsa`, `.ssh`, `.aws`, browser and
-  agent auth files). Do not try to work around a refusal.
+  agent auth files), and so is anything inside Hermes' own home (`~/.hermes`: the vault, session
+  transcripts, MCP tokens, webhook secrets, this plugin's index) or a virtual filesystem (`/proc`,
+  `/sys`, `/dev`). The check runs on the resolved path, so a symlink cannot get around it. Do not
+  try to work around a refusal — report it to the user and ask where the real document lives.
 - The user can also point at a file directly with `@recall:<path-or-query>` in a message.

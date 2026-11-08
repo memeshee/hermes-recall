@@ -137,6 +137,14 @@ Under `plugins.entries.recall.settings` (Desktop → Plugins → recall, or `her
 
 - **Local only.** No network, no API key, no account, no telemetry. The index is one SQLite file
   (FTS5) under `~/.hermes/plugin-data/recall/`.
+- **Hermes' own state is unreadable.** Every read — the index walk, `recall_open`, `@recall:` — goes
+  through one path policy that refuses, on the **resolved** path: anything inside Hermes' home
+  (`.hermes`: vault, session transcripts, `mcp-tokens/`, `webhook_subscriptions.json`, the dashboard
+  token, this plugin's own index), the credential-store denylist, and virtual filesystems such as
+  `/proc` (whose `self/environ` is a readable file full of API keys). A symlink named `notes.txt`
+  pointing at `~/.ssh/id_rsa` is refused too, because the resolution happens first. A root inside
+  Hermes' home is refused with a reason rather than silently walked, so `recall_index path=["~"]`
+  indexes everything except `~/.hermes`.
 - **Incremental.** `(mtime, size)` decides what to re-read; a deleted file is dropped on the next run
   inside a scanned root; the background refresh keeps it honest — and it only ever re-reads the folders
   your own index run named, so it cannot widen the index behind your back.
@@ -155,12 +163,15 @@ Under `plugins.entries.recall.settings` (Desktop → Plugins → recall, or `her
   indexed, and `recall_stats` says so.
 - **Name filtering cannot be complete.** The denylist refuses the habitual secret filenames (`.env`,
   keys, recovery codes, seed phrases, API token dumps) *before* anything is opened, but a password
-  written inside `meeting-notes.txt` will still be indexed. Point `roots` at document folders, not at
-  your whole home directory, and run `recall_forget` when something should not be in there.
+  written inside `meeting-notes.txt` will still be indexed if you point `roots` at the folder that
+  holds it. The rule that does hold absolutely is the home rule: `~/.hermes` and the credential
+  directories are unreachable no matter what a file is called. Point `roots` at document folders, not
+  at your whole home directory, and run `recall_forget` when something should not be in there.
 - **Lexical, not semantic.** Ranking is BM25 plus path/recency/phrase boosts. *"The document where we
   agreed the delivery date"* works; *"the thing that lawyer sent"* only works if those words are in it.
   No embedding model runs — which is why there is no key, no model download and no per-query cost.
-- **First run costs time** — roughly 20 ms per file on a warm disk. Point it at the folders that hold
+- **First run costs time** — measured at 16 ms per file on this machine over a mixed real tree
+  (3,000 files in 49 s, source code and `node_modules` included). Point it at the folders that hold
   documents, not at `/`.
 - **The index holds extracted text** in plain SQLite. It is refused by its own path rules, but it is
   not encrypted at rest — use `recall_forget` for anything you would not want sitting on disk.
@@ -182,12 +193,17 @@ invisible. Use it to try the plugin or to reproduce a bug without touching real 
 python3 tests/selftest.py     # standard library only, no Hermes install needed
 ```
 
-Fifteen behavioural checks: content ranking, PDF/Word/Excel extraction, the credential denylist
+Twenty-eight behavioural checks: content ranking, PDF/Word/Excel extraction, the credential denylist
 (including `recall_open` refusing a secret path, and the everyday secret filenames people actually
 keep in Documents), name-only recall for an unreadable file, incremental re-index, thread safety of
-the shared connection, phrase-over-scatter ranking, refresh scoping, forget/clear, and the ambient
-hook's four rules (fires for a document question, silent on chit-chat, silent on machine-generated
-turns, does not repeat itself).
+the shared connection, phrase-over-scatter ranking, refresh scoping (including a folder whose name
+contains a comma), forget/clear, the ambient hook's four rules (fires for a document question, silent
+on chit-chat, silent on machine-generated turns, does not repeat itself, and stays inside its prompt
+budget), and the read policy: a fake `~/.hermes` installed for the run, a whole `~` indexed with the
+home pruned out of it, `recall_open` and `@recall:` refusing the vault, session transcripts,
+`mcp-tokens/`, `webhook_subscriptions.json`, `state.db` and the plugin's own index, a symlink named
+`notes.txt` pointing at `mcp-tokens/linear.json`, `/proc/self/environ`, the `~/Documents-private` vs
+`~/Documents` prefix case, and the caps that stop a `.docx` or a PDF from inflating without bound.
 
 `hermes plugins validate ./` passes locally — the same gate the catalog CI runs.
 

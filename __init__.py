@@ -1,9 +1,11 @@
 """recall — local file recall for Hermes Agent.
 
-Registers four tools (`recall_index`, `recall_search`, `recall_open`, `recall_stats`), the
-`@recall:` context reference, a `pre_llm_call` hook that surfaces candidate files before the
-model answers, and the `/recall` slash command. Everything is local: SQLite FTS5 in the plugin's
-data directory, standard-library extraction, no network calls and no embedding service.
+Registers five tools (`recall_index`, `recall_search`, `recall_open`, `recall_stats`,
+`recall_forget`), an `@recall:` context reference, a `pre_llm_call` hook that surfaces candidate
+files before the model answers, and the `/recall` slash command. Everything is local: SQLite FTS5
+in the plugin's data directory, standard-library extraction, no network calls and no embedding
+service. Reads go through `guard.py`: credential stores, Hermes' own home and virtual filesystems
+are refused on the resolved path.
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import indexer, store
+from . import guard, indexer, store
 from .extract import extract
 
 OPEN_CHAR_CAP = 24000
@@ -23,13 +23,16 @@ def recall_index(runtime, args: dict[str, Any]) -> str:
         requested = args.get("path") or args.get("paths")
         if isinstance(requested, str):
             requested = [requested]
-        roots = indexer.resolve_roots(requested or runtime.setting("roots"))
+        configured = requested or runtime.setting("roots")
+        roots = indexer.resolve_roots(configured)
+        refused = indexer.refused_roots(configured)
         if not roots:
-            missing = [str(p) for p in (requested or runtime.setting("roots") or [])]
+            missing = [str(p) for p in (configured or [])]
             return _err(
                 "no indexable folders found"
                 + (f" — not a directory: {', '.join(missing)}" if missing else ""),
                 configured=runtime.setting("roots"),
+                refused=refused,
                 hint="pass path=[\"/abs/dir\"] or set plugins.entries.recall.settings.roots",
             )
         summary = indexer.index(
@@ -42,6 +45,8 @@ def recall_index(runtime, args: dict[str, Any]) -> str:
             chunk_chars=int(runtime.setting("chunk_chars")),
             force=bool(args.get("rebuild")),
         )
+        if refused:
+            summary["roots_refused"] = refused
         summary.update(store.stats(conn))
         return json.dumps(summary, ensure_ascii=False)
     except Exception as exc:  # never break a turn
@@ -96,30 +101,33 @@ def recall_open(runtime, args: dict[str, Any]) -> str:
         if not path.is_absolute():
             # Accept a result path returned by recall_search relative to the home dir as well.
             path = Path.home() / path
-        if not path.exists():
-            return _err(f"not found: {path}")
-        if not path.is_file():
-            return _err(f"not a file: {path}")
-        if indexer.is_secret(path):
-            return _err("refused: path matches the credential-store denylist")
+        # Judged on the resolved path: a symlink named notes.txt pointing at ~/.ssh/id_rsa, a path
+        # inside Hermes' home, and /proc/self/environ are all refused here.
+        real, reason = guard.inspect(path)
+        if reason:
+            return _err(reason, path=str(path), resolved=str(real))
+        if not real.exists():
+            return _err(f"not found: {real}")
+        if not real.is_file():
+            return _err(f"not a file: {real}")
         cap = max(500, min(int(args.get("max_chars") or OPEN_CHAR_CAP), 120000))
         offset = max(0, int(args.get("offset") or 0))
-        text, note = _read_any(path, cap)
+        text, note = _read_any(real, cap)
         if not text:
-            return _err(f"no readable text ({note or 'unknown'})", path=str(path))
+            return _err(f"no readable text ({note or 'unknown'})", path=str(real))
         window = text[offset: offset + cap]
-        return json.dumps(
-            {
-                "path": str(path),
-                "chars_total": len(text),
-                "offset": offset,
-                "returned": len(window),
-                "truncated": offset + len(window) < len(text),
-                "note": note,
-                "text": window,
-            },
-            ensure_ascii=False,
-        )
+        out = {
+            "path": str(real),
+            "chars_total": len(text),
+            "offset": offset,
+            "returned": len(window),
+            "truncated": offset + len(window) < len(text),
+            "note": note,
+            "text": window,
+        }
+        if str(real) != str(path):
+            out["requested"] = str(path)
+        return json.dumps(out, ensure_ascii=False)
     except Exception as exc:
         return _err(f"open failed: {exc.__class__.__name__}: {exc}")
 
@@ -133,6 +141,7 @@ def recall_stats(runtime, args: dict[str, Any]) -> str:
         out["roots_missing"] = [
             str(p) for p in configured if not Path(os.path.expandvars(os.path.expanduser(str(p)))).is_dir()
         ]
+        out["roots_refused"] = indexer.refused_roots(configured)
         out["ambient"] = bool(runtime.setting("ambient"))
         out["refresh_on_start"] = bool(runtime.setting("refresh_on_start", True))
         if out["files"] == 0:
@@ -178,8 +187,9 @@ INDEX_SCHEMA = {
         "Build or refresh the local file index that recall_search and recall_open read. "
         "Incremental: only new or changed files are re-extracted, so repeat calls are cheap. "
         "Credential stores (.env, *.pem, id_rsa, .ssh, .aws, browser and agent auth files) and "
-        "build directories are never read. Use this before searching a folder for the first time, "
-        "or when the user says a file is missing from results."
+        "build directories are never read, and neither is Hermes' own home directory "
+        "(~/.hermes: vault, sessions, MCP tokens, this index). Use this before searching a folder "
+        "for the first time, or when the user says a file is missing from results."
     ),
     "parameters": {
         "type": "object",
@@ -187,7 +197,11 @@ INDEX_SCHEMA = {
             "path": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Absolute folders to index. Defaults to the configured roots (~/Documents, ~/Desktop, ~/Downloads, ~/Projects).",
+                "description": (
+                    "Absolute folders to index. Defaults to the configured roots, which is "
+                    "~/Documents unless the user set plugins.entries.recall.settings.roots. "
+                    "~/Downloads, ~/Desktop and ~/Projects are indexed only when named here."
+                ),
             },
             "rebuild": {"type": "boolean", "description": "Re-extract every file even if unchanged."},
             "budget_s": {"type": "integer", "description": "Wall-clock budget for this run, in seconds. Partial runs resume next call."},
@@ -221,7 +235,8 @@ OPEN_SCHEMA = {
     "description": (
         "Read a file that recall_search returned (or any local document) as text: PDF, Word, "
         "Excel, PowerPoint, Markdown, code, CSV. Supports offset/max_chars for long documents so "
-        "you can page through instead of truncating silently."
+        "you can page through instead of truncating silently. Refuses credential stores, Hermes' "
+        "own home directory and virtual filesystems, and reports the refusal instead of the file."
     ),
     "parameters": {
         "type": "object",

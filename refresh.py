@@ -10,6 +10,7 @@ surfaced.
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 
@@ -57,10 +58,23 @@ def refresh_roots(runtime) -> list:
 
     Never the configured defaults — re-resolving those here would silently widen the index the first
     time a session starts on a machine with a populated ~/Downloads, and indexing folders the user
-    never asked for is the worst kind of surprise.
+    never asked for is the worst kind of surprise. `resolve_roots` applies the same read policy as a
+    manual run, so a root that has since become unreadable simply drops out.
     """
-    recorded = store.get_meta(runtime.conn, "roots", "")
-    candidates = [part.strip() for part in recorded.split(",") if part.strip()]
+    recorded = store.get_meta(runtime.conn, "roots_json", "")
+    candidates: list[str] = []
+    if recorded:
+        try:
+            parsed = json.loads(recorded)
+        except (ValueError, TypeError):
+            parsed = []
+        if isinstance(parsed, list):
+            candidates = [str(p).strip() for p in parsed if str(p).strip()]
+    if not candidates:
+        # Older indexes stored a comma-joined string; keep honouring it (a comma inside a folder
+        # name is why the JSON key exists, so this path stays a fallback).
+        legacy = store.get_meta(runtime.conn, "roots", "")
+        candidates = [part.strip() for part in legacy.split(",") if part.strip()]
     if not candidates:
         return []
     return indexer.resolve_roots(candidates)

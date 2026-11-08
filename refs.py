@@ -12,7 +12,7 @@ from pathlib import Path
 
 from agent.context_references import ContextCompletionItem, ContextReferenceProvider
 
-from . import indexer, store
+from . import guard, store
 from .extract import extract
 
 EXPAND_CHAR_CAP = 6000
@@ -51,10 +51,15 @@ class RecallReference(ContextReferenceProvider):
         if not target:
             return None
         if os.path.isabs(os.path.expanduser(target)):
-            path = Path(os.path.expanduser(target))
-            if not path.is_file() or indexer.is_secret(path):
+            # Same policy as the tools, on the resolved path: no credential stores, no Hermes home,
+            # no /proc — a typed absolute path is not an exemption from the read rules.
+            real, reason = guard.inspect(target)
+            if reason:
+                return f"{guard.expand(target)}\n\n({reason})"
+            if not real.is_file():
                 return None
-            text, note = extract(path, max_bytes=64 * 1024 * 1024)
+            text, note = extract(real, max_bytes=64 * 1024 * 1024)
+            path = real
             if not text:
                 return f"{path}\n\n(no readable text: {note})"
             body = text[:SINGLE_FILE_CAP]

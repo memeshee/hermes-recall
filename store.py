@@ -272,7 +272,9 @@ def wipe(conn: sqlite3.Connection) -> None:
     conn.execute("DELETE FROM chunks_fts")
     conn.execute("DELETE FROM chunks")
     conn.execute("DELETE FROM files")
-    conn.execute("DELETE FROM meta WHERE key IN ('last_index', 'roots', 'index_seconds')")
+    conn.execute(
+        "DELETE FROM meta WHERE key IN ('last_index', 'roots', 'roots_json', 'index_seconds')"
+    )
     conn.commit()
 
 

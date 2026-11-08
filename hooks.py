@@ -144,7 +144,13 @@ def build_context(runtime, user_message: Any, session_id: str = "") -> str:
         return ""
 
     lines = ["[recall] Local files in the user's index that may be the document being discussed:"]
-    budget = MAX_CONTEXT_CHARS - len(lines[0])
+    # The whole block is bounded, tail included: `pre_llm_call` runs on every turn, so what this
+    # hook can add to a prompt is a fixed budget rather than a number that grows with the corpus.
+    tail = (
+        "Read one with recall_open before answering, and cite the path. If none of these is the "
+        "right document, say so and ask — do not invent a file."
+    )
+    budget = MAX_CONTEXT_CHARS - len(lines[0]) - len(tail) - 2
     for hit in picks:
         name = os.path.basename(hit["path"])
         snap = re.sub(r"\s+", " ", (hit.get("snippet") or "")).strip()[:180]
@@ -152,13 +158,10 @@ def build_context(runtime, user_message: Any, session_id: str = "") -> str:
         if len(line) > budget:
             break
         lines.append(line)
-        budget -= len(line)
+        budget -= len(line) + 1
     if len(lines) == 1:
         return ""
-    lines.append(
-        "Read one with recall_open before answering, and cite the path. If none of these is the "
-        "right document, say so and ask — do not invent a file."
-    )
+    lines.append(tail)
     return "\n".join(lines)
 
 

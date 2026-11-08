@@ -9,6 +9,7 @@ reports, so the index never silently loses a whole file type.
 from __future__ import annotations
 
 import html
+import itertools
 import re
 import zipfile
 from pathlib import Path
@@ -42,6 +43,22 @@ _A_T_NODE = re.compile(r"<a:t\b[^>]*>(.*?)</a:t>", re.S)
 _TEXT_NODE = re.compile(r"<text:[pt]\b[^>]*>(.*?)</text:[pt]>", re.S)
 _NUM_NODE = re.compile(r"<v\b[^>]*>(-?\d+(?:\.\d+)?)</v>", re.S)
 
+# A document that is 200 KB on disk can inflate to gigabytes: an OOXML member or a PDF stream is
+# attacker-shaped input the moment it comes from a download folder. Both readers stop at a cap
+# instead of trusting the archive's own idea of its size.
+MAX_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_INFLATE_BYTES = 4 * 1024 * 1024
+MAX_PDF_STREAMS = 4000
+
+
+def _member(zf: zipfile.ZipFile, name: str, cap: int = MAX_MEMBER_BYTES) -> str:
+    """Read one archive member, refusing to decompress past `cap` bytes."""
+    info = zf.getinfo(name)
+    if info.file_size > cap * 4:
+        return ""
+    with zf.open(name) as fh:
+        return fh.read(cap).decode("utf-8", "ignore")
+
 
 def _xml_text(raw: str) -> str:
     return html.unescape(_TAG.sub(" ", raw)).strip()
@@ -62,13 +79,13 @@ def _office_text(path: Path) -> str:
             cells: list[str] = []
             for name in names:
                 if "sharedStrings" in name:
-                    blob = zf.read(name).decode("utf-8", "ignore")
+                    blob = _member(zf, name)
                     for si in _SI_BLOCK.findall(blob):
                         value = " ".join(_xml_text(t) for t in _T_NODE.findall(si)).strip()
                         if value:
                             cells.append(value)
                 elif re.search(r"sheet\d*\.xml$|content\.xml$", name):
-                    blob = zf.read(name).decode("utf-8", "ignore")
+                    blob = _member(zf, name)
                     for node in _TEXT_NODE.findall(blob):
                         value = _xml_text(node)
                         if value:
@@ -88,8 +105,8 @@ def _office_text(path: Path) -> str:
         parts: list[str] = []
         for name in wanted[:60]:
             try:
-                blob = zf.read(name).decode("utf-8", "ignore")
-            except (KeyError, RuntimeError):
+                blob = _member(zf, name)
+            except (KeyError, RuntimeError, OSError):
                 continue
             paragraphs = (
                 _WT_NODE.findall(blob)
@@ -137,18 +154,26 @@ def _pdf_text(path: Path) -> tuple[str, str]:
 
     import zlib
 
+    def _inflate(blob: bytes) -> str | None:
+        """Decompress a stream with a hard output ceiling (a PDF bomb must not eat the index run)."""
+        try:
+            obj = zlib.decompressobj()
+            out = obj.decompress(blob, MAX_INFLATE_BYTES)
+            return out.decode("latin-1", "ignore")
+        except zlib.error:
+            return None
+
     pieces: list[str] = []
-    for match in re.finditer(rb"stream\r?\n(.{16,}?)endstream", raw, re.S):
+    for match in itertools.islice(re.finditer(rb"stream\r?\n(.{16,}?)endstream", raw, re.S), MAX_PDF_STREAMS):
         blob = match.group(1)
         for candidate in (blob, blob.rstrip(b"\r\n")):
-            try:
-                pieces.append(zlib.decompress(candidate).decode("latin-1", "ignore"))
+            inflated = _inflate(candidate)
+            if inflated is not None:
+                pieces.append(inflated)
                 break
-            except zlib.error:
-                continue
         else:
-            pieces.append(blob.decode("latin-1", "ignore"))
-    text_sources = pieces or [raw.decode("latin-1", "ignore")]
+            pieces.append(blob[:MAX_INFLATE_BYTES].decode("latin-1", "ignore"))
+    text_sources = pieces or [raw[:MAX_INFLATE_BYTES].decode("latin-1", "ignore")]
 
     found: list[str] = []
     for source in text_sources:
